@@ -1,0 +1,114 @@
+# The Stack: two Argo CD Applications, one dependency edge, and a value handoff.
+#
+# Requires the ArgoCDApplicationTemplate objects in
+# argocd-application-templates.yaml to exist, since it references them by name.
+# A templateRef is resolved on every reconcile, so apply them first or the stack
+# reports TemplateNotFound until they land.
+---
+apiVersion: management.loft.sh/v1
+kind: StackTemplate
+metadata:
+  name: demo-backend-frontend
+spec:
+  displayName: Demo backend and frontend
+  description: >-
+    Two Argo CD Applications in one dependency graph, with the frontend
+    configured from values captured off the backend after it synced.
+  parameters:
+    - variable: repoURL
+      label: Git repository URL
+      type: string
+      required: true
+    - variable: targetRevision
+      label: Target revision
+      type: string
+      defaultValue: main
+    - variable: backendNamespace
+      label: Backend namespace
+      type: string
+      defaultValue: demo-backend
+    - variable: frontendNamespace
+      label: Frontend namespace
+      type: string
+      defaultValue: demo-frontend
+    # The chart decides what it names its Service and Secret, so the output
+    # sources are parameterized rather than hard-coded.
+    - variable: backendServiceName
+      label: Backend Service name
+      type: string
+      defaultValue: backend
+    - variable: backendSecretName
+      label: Backend API token Secret name
+      type: string
+      defaultValue: backend-api
+
+  tasks:
+    # ---------------------------------------------------------------------
+    # Task 1: the backend. Produces the values task 2 consumes.
+    #
+    # A task that declares outputs needs a name of letters and digits only,
+    # because it is addressed as {{ .Outputs.backend.<name> }}.
+    # ---------------------------------------------------------------------
+    - name: backend
+      timeout: 10m
+      argoCDApplication:
+        templateRef:
+          name: demo-backend
+        # `parameters` is valid only on the templateRef arm. These values are
+        # rendered by the Stack, then handed to the ArgoCDApplicationTemplate.
+        parameters:
+          repoURL: "{{ .Values.repoURL }}"
+          targetRevision: "{{ .Values.targetRevision }}"
+          namespace: "{{ .Values.backendNamespace }}"
+      outputs:
+        # fromResource reads one scalar through a kubectl JSONPath. The cluster
+        # assigns this address, so it cannot be known before the task syncs:
+        # that is the case where capture is the only option. Cluster-scoped
+        # resources and core v1 Secrets are rejected here.
+        #
+        # An Argo CD task may read from its destination namespace plus every
+        # namespace it reports a synced resource in, and only once the child
+        # reports Synced.
+        - name: endpoint
+          fromResource:
+            apiVersion: v1
+            kind: Service
+            namespace: "{{ .Values.backendNamespace }}"
+            name: "{{ .Values.backendServiceName }}"
+            jsonPath: "{.spec.clusterIP}"
+        # fromSecret is the path for sensitive values. It decodes the key and
+        # keeps the value out of status and out of publishedOutputs below.
+        - name: token
+          fromSecret:
+            namespace: "{{ .Values.backendNamespace }}"
+            name: "{{ .Values.backendSecretName }}"
+            key: token
+
+    # ---------------------------------------------------------------------
+    # Task 2: the frontend. Waits for the backend and is configured from it.
+    # ---------------------------------------------------------------------
+    - name: frontend
+      dependsOn:
+        - backend
+      timeout: 10m
+      argoCDApplication:
+        templateRef:
+          name: demo-frontend
+        parameters:
+          repoURL: "{{ .Values.repoURL }}"
+          targetRevision: "{{ .Values.targetRevision }}"
+          namespace: "{{ .Values.frontendNamespace }}"
+          # The handoff. These render only after the backend task is Synced and
+          # Healthy and both values are captured, so the frontend Application is
+          # never created carrying a placeholder.
+          backendEndpoint: "{{ .Outputs.backend.endpoint }}"
+          backendToken: "{{ .Outputs.backend.token }}"
+
+  # Captured outputs are internal to the stack unless they are published. The
+  # endpoint is safe to hand to users; the token is not published at all.
+  publishedOutputs:
+    - name: backendEndpoint
+      fromTask:
+        task: backend
+        output: endpoint
+

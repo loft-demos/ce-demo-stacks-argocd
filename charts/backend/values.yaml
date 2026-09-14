@@ -1,0 +1,23 @@
+replicaCount: 1
+
+image:
+  repository: nginxinc/nginx-unprivileged
+  tag: 1.27-alpine
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  # Keep this above 1024. The image runs as a non-root user and cannot bind a
+  # privileged port.
+  port: 8080
+
+# Name of the Secret the API token lands in. The Stack reads it with
+# fromSecret{namespace, name: <this>, key: token}, so the two have to agree.
+tokenSecret:
+  name: backend-api
+
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+fullnameOverride: ""

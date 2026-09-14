@@ -1,0 +1,27 @@
+replicaCount: 1
+
+image:
+  repository: nginxinc/nginx-unprivileged
+  tag: 1.27-alpine
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  # Keep this above 1024. The image runs as a non-root user and cannot bind a
+  # privileged port.
+  port: 8080
+
+# Both of these are supplied by the Stack from the backend task's captured
+# outputs, so they have no useful default. The chart fails fast rather than
+# installing a frontend that points nowhere.
+backend:
+  # e.g. http://10.96.0.42:8080 - the backend Service's cluster IP.
+  url: ""
+  # The API token the backend's Secret holds.
+  token: ""
+
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+fullnameOverride: ""

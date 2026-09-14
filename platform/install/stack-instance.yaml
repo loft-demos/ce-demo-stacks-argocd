@@ -1,0 +1,31 @@
+# Install path A: run the stack against a tenant cluster that already exists.
+---
+# Install path A: a StackInstance against an existing tenant cluster. Create it
+# in the project namespace (p-<project>); the destination must be in the same
+# project and is immutable after creation.
+#
+# spec.owner is set here because it propagates to both child ArgoCDApplications
+# and governs their access to the destination and to referenced project
+# secrets. The UI and the management API set it from the creating identity; a
+# hand-applied StackInstance has to set it itself.
+apiVersion: management.loft.sh/v1
+kind: StackInstance
+metadata:
+  name: demo-app
+  namespace: p-my-project
+spec:
+  displayName: Demo app
+  destination:
+    virtualCluster:
+      name: my-tenant-cluster
+  templateRef:
+    name: demo-backend-frontend
+  parameters:
+    repoURL: https://github.com/my-org/ce-demo-stacks-argocd.git
+    targetRevision: main
+  defaults:
+    taskTimeout: 10m
+  prunePolicy: Prune
+  owner:
+    user: my-user
+

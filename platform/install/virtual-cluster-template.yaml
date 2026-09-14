@@ -1,0 +1,53 @@
+# Install path B: every tenant cluster created from this template gets its own
+# StackInstance, owned by the tenant cluster and deleted with it.
+---
+# Install path B: declare it in a VirtualClusterTemplate so every tenant cluster
+# created from the template gets its own StackInstance, owned by the tenant
+# cluster and deleted with it.
+#
+# An Argo CD task on this path is held as StackBlocked unless integrations.argoCD
+# is enabled with a connector in the SAME vcluster.yaml. Watch the StacksSynced
+# condition on the VirtualClusterInstance: a blocked entry produces no
+# StackInstance object at all, so there is nothing for kubectl to show.
+#
+# A deploy.stacks entry always targets the tenant cluster itself, always inherits
+# the tenant cluster's owner, and has no owner or access field. The subtree is
+# parsed strictly, so a misspelled field here is an error rather than a silently
+# dropped value.
+apiVersion: management.loft.sh/v1
+kind: VirtualClusterTemplate
+metadata:
+  name: demo-app-tenant
+spec:
+  displayName: Tenant cluster with the demo app
+  parameters:
+    - variable: repoURL
+      label: Git repository URL
+      type: string
+      required: true
+  template:
+    pro:
+      enabled: true
+    helmRelease:
+      chart:
+        name: vcluster
+        repo: https://charts.loft.sh
+        version: "0.37.0"
+      values: |-
+        integrations:
+          argoCD:
+            enabled: true
+            connector: my-argocd-connector
+
+        deploy:
+          stacks:
+            - name: demo-app
+              displayName: Demo app
+              templateRef:
+                name: demo-backend-frontend
+              parameters:
+                repoURL: "{{ .Values.repoURL }}"
+                targetRevision: main
+              defaults:
+                taskTimeout: 10m
+              prunePolicy: Prune

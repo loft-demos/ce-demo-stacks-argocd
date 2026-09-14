@@ -1,0 +1,115 @@
+# Argo CD blueprints for the two demo Applications.
+#
+# Each is a cluster-scoped ArgoCDApplicationTemplate: declared parameters plus a
+# real Argo CD ApplicationSpec. The StackTemplate references them by name and
+# supplies their parameter values.
+#
+# The `{{ .Values.x }}` actions in here belong to the ArgoCDApplication
+# controller, not to the Stack. The Stack fills the task's `parameters` values;
+# this layer is rendered afterwards, so neither has to escape the other.
+---
+apiVersion: management.loft.sh/v1
+kind: ArgoCDApplicationTemplate
+metadata:
+  name: demo-backend
+spec:
+  displayName: Demo backend
+  description: Backend chart, synced by Argo CD into the destination cluster.
+  parameters:
+    - variable: repoURL
+      label: Git repository URL
+      type: string
+      required: true
+    - variable: targetRevision
+      label: Target revision
+      type: string
+      defaultValue: main
+    - variable: namespace
+      label: Target namespace
+      type: string
+      defaultValue: demo-backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: demo-app
+    spec:
+      project: default
+      source:
+        repoURL: "{{ .Values.repoURL }}"
+        path: charts/backend
+        targetRevision: "{{ .Values.targetRevision }}"
+        helm:
+          releaseName: backend
+          values: |-
+            service:
+              port: 8080
+      # Only `namespace` is honored here. The Platform overwrites
+      # destination.server and destination.name from the StackInstance's own
+      # destination, so there is nothing to set and nothing to keep in sync.
+      destination:
+        namespace: "{{ .Values.namespace }}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          # Argo CD does not create the target namespace on its own. The app
+          # task path gets this from Helm; here it has to be asked for.
+          - CreateNamespace=true
+
+---
+apiVersion: management.loft.sh/v1
+kind: ArgoCDApplicationTemplate
+metadata:
+  name: demo-frontend
+spec:
+  displayName: Demo frontend
+  description: Frontend chart, wired to a backend endpoint and token supplied as parameters.
+  parameters:
+    - variable: repoURL
+      label: Git repository URL
+      type: string
+      required: true
+    - variable: targetRevision
+      label: Target revision
+      type: string
+      defaultValue: main
+    - variable: namespace
+      label: Target namespace
+      type: string
+      defaultValue: demo-frontend
+    # These two are what the Stack fills from the backend task's outputs. The
+    # template does not know or care that they were captured rather than typed.
+    - variable: backendEndpoint
+      label: Backend endpoint
+      type: string
+      required: true
+    - variable: backendToken
+      label: Backend API token
+      type: password
+      required: true
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: demo-app
+    spec:
+      project: default
+      source:
+        repoURL: "{{ .Values.repoURL }}"
+        path: charts/frontend
+        targetRevision: "{{ .Values.targetRevision }}"
+        helm:
+          releaseName: frontend
+          values: |-
+            backend:
+              url: "http://{{ .Values.backendEndpoint }}:8080"
+              token: "{{ .Values.backendToken }}"
+      destination:
+        namespace: "{{ .Values.namespace }}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+
