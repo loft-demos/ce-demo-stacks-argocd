@@ -64,8 +64,9 @@ name, so nothing in `platform/` parses a chart.
 - This repository pushed somewhere the Argo CD connector can read.
 
 Optional, for the Gateway API exposure described below: Gateway API installed on
-the **control plane cluster** with a controller and a Gateway to share. Nothing
-extra is needed inside the tenant cluster.
+the **control plane cluster** with a controller and a Gateway to share, plus one
+health-check override on your Argo CD. Nothing extra is needed inside the tenant
+cluster — vCluster installs the Gateway API CRDs there itself.
 
 ## Quick start
 
@@ -212,6 +213,64 @@ the tenant see where to point DNS:
 vcluster connect stacks-demo
 kubectl get gateway -n gateway-system shared-gateway
 ```
+
+### What your Argo CD needs
+
+One health-check override, or the frontend Application sits in Progressing
+forever and the stack task eventually times out.
+
+This is a vCluster bug, not a configuration mistake. `statusToVirtual` in the
+HTTPRoute syncer translates the parent reference from host to tenant, but copies
+`status.observedGeneration` across verbatim. That field is defined by Kubernetes
+API convention as the generation of *the object it appears on*, and the host and
+tenant copies have independent generations. They happen to track each other
+until something writes the host copy on its own — which the Platform's own
+sleep-mode agent does, adding a RequestMirror filter so route traffic can refresh
+the tenant's last-activity timestamp. After that write the tenant route reports
+`generation: 1` alongside `observedGeneration: 2`, permanently, and every client
+that does the standard freshness check reads it as a status that never caught up.
+Argo CD is only the one that says so out loud; kstatus, and therefore Flux and
+`kubectl wait`, behave the same way. The same gap is in the TLSRoute,
+BackendTLSPolicy and imported-Gateway syncers.
+
+Until that is fixed upstream, judge the route by its conditions instead. In the
+`argo-cd` Helm chart this goes under `configs.cm`, which passes values through
+verbatim:
+
+```yaml
+configs:
+  cm:
+    resource.customizations.health.gateway.networking.k8s.io_HTTPRoute: |
+      local hs = {}
+      if obj.status ~= nil and obj.status.parents ~= nil and #obj.status.parents > 0 then
+        for _, parent in ipairs(obj.status.parents) do
+          if parent.conditions ~= nil then
+            for _, condition in ipairs(parent.conditions) do
+              if (condition.type == "Accepted" or condition.type == "ResolvedRefs")
+                 and condition.status ~= "True" then
+                hs.status = "Degraded"
+                hs.message = condition.message
+                return hs
+              end
+            end
+          end
+        end
+        hs.status = "Healthy"
+        hs.message = "Route accepted"
+        return hs
+      end
+      hs.status = "Progressing"
+      hs.message = "Waiting for HTTPRoute status"
+      return hs
+```
+
+The same key with `_TLSRoute` or `_BackendTLSPolicy` covers those kinds if you
+sync them.
+
+The tradeoff is real but small: without the generation check, a route whose spec
+was just edited reads Healthy from the previous generation's conditions until the
+controller catches up. `argocd-cm` is re-read live, so no restart is needed, but
+a Hard Refresh on the Application forces re-evaluation immediately.
 
 ### Turning it on
 
@@ -401,6 +460,20 @@ rule so it can attach a RequestMirror filter, and vCluster then rewrites the hos
 spec from the still-unnamed tenant rule and strips the name back off. The giveaway
 is a tenant route stuck at `generation: 1` whose status reports a much higher
 `observedGeneration` — the host copy is churning while the tenant copy is not.
+
+**The Application is Synced but stuck in Progressing, health details "Waiting
+for HTTPRoute status".** The route is fine; Argo CD's built-in health check is
+reading `status.observedGeneration` as stale because vCluster copies it from the
+host copy. Confirm by comparing the two numbers on the tenant route:
+
+```bash
+kubectl get httproute -n demo-frontend frontend \
+  -o jsonpath='{.metadata.generation}{"\t"}{.status.parents[0].conditions[0].observedGeneration}{"\n"}'
+```
+
+Different numbers with `Accepted=True` means you need the health-check override
+from **What your Argo CD needs** above. Note the task timeout: an Application that
+never reports Healthy takes the stack task down with it.
 
 **The HTTPRoute is not being served.** Check the three places it has to land.
 In the tenant, the mirror must exist and the route must have attached:

@@ -92,12 +92,18 @@ plane cluster is the tenant's sync config, which the repository README covers.
 `gateway.name` is required when the route is enabled, and the chart fails the
 render without it.
 
-The rule carries an explicit `name`, and that is load-bearing rather than
-decorative. On a tenant cluster that can sleep, the Platform agent adds a
+Two things about the route are load-bearing rather than decorative.
+
+The rule carries an explicit `name`. On a tenant cluster that can sleep, the Platform agent adds a
 RequestMirror filter to the host copy of the route and needs a named rule to
 attach it to; vCluster correlates host and tenant rules by name when deciding
 which filters to preserve. Leave the rule unnamed and the agent stamps a name on
 the host while vCluster strips it again on the next sync, which never converges.
+
+And the route needs a health-check override on the Argo CD side, because
+vCluster copies `status.observedGeneration` verbatim from the host copy of the
+route. The repository README has the override and the reasoning; without it the
+Application never leaves Progressing even though the route is being served.
 
 Note that the two values come from *different* tasks. The frontend lists only
 `backend` in `dependsOn`, and reaches the `credentials` output through the
