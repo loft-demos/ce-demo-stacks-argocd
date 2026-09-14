@@ -28,6 +28,11 @@ spec:
       label: Target namespace
       type: string
       defaultValue: demo-backend
+    # Filled by the Stack from the credentials task's captured output.
+    - variable: backendToken
+      label: Shared API token
+      type: password
+      required: true
   template:
     metadata:
       labels:
@@ -43,6 +48,8 @@ spec:
           values: |-
             service:
               port: 8080
+            backend:
+              token: "{{ .Values.backendToken }}"
       # Only `namespace` is honored here. The Platform overwrites
       # destination.server and destination.name from the StackInstance's own
       # destination, so there is nothing to set and nothing to keep in sync.

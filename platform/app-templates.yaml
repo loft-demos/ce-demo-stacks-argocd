@@ -1,0 +1,51 @@
+# The Platform App behind the stack's `credentials` task.
+#
+# This is where the shared API token is generated. It is an App rather than an
+# Argo CD Application on purpose: an App's manifests are handed to Helm as
+# written, with cluster access, so `lookup` and `randAlphaNum` both work. Argo CD
+# renders client-side with no cluster access, so a chart it syncs cannot look up
+# what it already created and would rotate the token on every sync.
+#
+# Note that the `{{ ... }}` in here belongs to Helm, not to the Stack. The Stack
+# only renders a task's own payload, and an app task that uses templateRef
+# carries nothing but the reference and its parameter values.
+---
+apiVersion: management.loft.sh/v1
+kind: App
+metadata:
+  name: demo-api-token
+spec:
+  displayName: Demo API token
+  description: >-
+    Generates the shared API token the backend validates and the frontend sends,
+    and keeps it stable across upgrades.
+  # Must match the stack's backendNamespace parameter. This is the namespace the
+  # release lands in, and therefore the only namespace the task's outputs may be
+  # read from. An App's defaultNamespace is not templated, so it is a literal.
+  defaultNamespace: demo-backend
+  wait: true
+  parameters:
+    - variable: secretName
+      label: Secret name
+      type: string
+      defaultValue: backend-api
+  config:
+    manifests: |-
+      {{- $name := .Values.secretName -}}
+      {{- $existing := lookup "v1" "Secret" .Release.Namespace $name -}}
+      {{- $token := "" -}}
+      {{- if and $existing (index ($existing.data | default dict) "token") -}}
+      {{- $token = index $existing.data "token" | b64dec -}}
+      {{- else -}}
+      {{- $token = randAlphaNum 32 -}}
+      {{- end }}
+      # Generated once. The lookup above reuses the existing value on any later
+      # render, so an upgrade or a parameter edit does not rotate the token out
+      # from under the backend and frontend that were configured with it.
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: {{ $name }}
+      type: Opaque
+      stringData:
+        token: {{ $token | quote }}

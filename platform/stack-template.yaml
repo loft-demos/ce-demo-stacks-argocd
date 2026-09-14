@@ -1,9 +1,15 @@
-# The Stack: two Argo CD Applications, one dependency edge, and a value handoff.
+# The Stack: three tasks of two different types in one dependency graph.
 #
-# Requires the ArgoCDApplicationTemplate objects in
-# argocd-application-templates.yaml to exist, since it references them by name.
-# A templateRef is resolved on every reconcile, so apply them first or the stack
-# reports TemplateNotFound until they land.
+#   credentials (app) ──► backend (argoCDApplication) ──► frontend (argoCDApplication)
+#        │                      │                              ▲
+#        │ token                │ endpoint                     │
+#        └──────────────────────┴──────────────────────────────┘
+#          frontend reads the token through its transitive path to credentials
+#
+# Requires the App and the two ArgoCDApplicationTemplate objects in this
+# directory, since it references all three by name. A templateRef is resolved on
+# every reconcile, so apply them first or the stack reports TemplateNotFound
+# until they land.
 ---
 apiVersion: management.loft.sh/v1
 kind: StackTemplate
@@ -12,8 +18,9 @@ metadata:
 spec:
   displayName: Demo backend and frontend
   description: >-
-    Two Argo CD Applications in one dependency graph, with the frontend
-    configured from values captured off the backend after it synced.
+    A Platform App that generates a shared API token, then two Argo CD
+    Applications configured from it and from each other. Mixes task types in a
+    single graph and hands captured values down it.
   parameters:
     - variable: repoURL
       label: Git repository URL
@@ -31,35 +38,74 @@ spec:
       label: Frontend namespace
       type: string
       defaultValue: demo-frontend
-    # The chart decides what it names its Service and Secret, so the output
-    # sources are parameterized rather than hard-coded.
+    # The chart and the App decide what they name their Service and Secret, so
+    # the output sources are parameterized rather than hard-coded.
     - variable: backendServiceName
       label: Backend Service name
       type: string
       defaultValue: backend
     - variable: backendSecretName
-      label: Backend API token Secret name
+      label: Shared API token Secret name
       type: string
       defaultValue: backend-api
 
   tasks:
     # ---------------------------------------------------------------------
-    # Task 1: the backend. Produces the values task 2 consumes.
+    # Task 1: the shared API token. An `app` task, not an Argo CD one.
+    #
+    # This is why the graph mixes types. An App's manifests are handed to Helm
+    # as written, with cluster access, so it can generate the token with
+    # randAlphaNum and keep it stable with lookup. Argo CD renders client-side
+    # with no cluster access, so a chart it syncs can do neither and would
+    # rotate the token on every sync.
+    #
+    # An app task requires the stack to have an owner, and pulls in the `apps`
+    # license feature alongside `argo-integration`.
     #
     # A task that declares outputs needs a name of letters and digits only,
-    # because it is addressed as {{ .Outputs.backend.<name> }}.
+    # because it is addressed as {{ .Outputs.credentials.<name> }}.
+    # ---------------------------------------------------------------------
+    # Durations are written in the canonical form the apiserver serializes back
+    # (10m0s, not 10m), so a GitOps diff of this file does not show drift.
+    - name: credentials
+      timeout: 5m0s
+      app:
+        templateRef:
+          name: demo-api-token
+        parameters:
+          secretName: "{{ .Values.backendSecretName }}"
+      outputs:
+        # The generated value, read back out of the cluster. fromSecret is the
+        # path for sensitive values: it decodes the key and keeps the value out
+        # of status and out of publishedOutputs below.
+        #
+        # An app task may read outputs only from its AppInstance's release
+        # namespace, and only once the child reports Deployed.
+        - name: token
+          fromSecret:
+            namespace: "{{ .Values.backendNamespace }}"
+            name: "{{ .Values.backendSecretName }}"
+            key: token
+
+    # ---------------------------------------------------------------------
+    # Task 2: the backend. Consumes the token, produces its own endpoint.
     # ---------------------------------------------------------------------
     - name: backend
+      dependsOn:
+        - credentials
       timeout: 10m0s
       argoCDApplication:
         templateRef:
           name: demo-backend
         # `parameters` is valid only on the templateRef arm. These values are
         # rendered by the Stack, then handed to the ArgoCDApplicationTemplate.
+        # An app task feeding an Argo CD task is the same handoff as any other;
+        # the graph does not care that the two ends are different types.
         parameters:
           repoURL: "{{ .Values.repoURL }}"
           targetRevision: "{{ .Values.targetRevision }}"
           namespace: "{{ .Values.backendNamespace }}"
+          backendToken: "{{ .Outputs.credentials.token }}"
       outputs:
         # fromResource reads one scalar through a kubectl JSONPath. The cluster
         # assigns this address, so it cannot be known before the task syncs:
@@ -76,16 +122,14 @@ spec:
             namespace: "{{ .Values.backendNamespace }}"
             name: "{{ .Values.backendServiceName }}"
             jsonPath: "{.spec.clusterIP}"
-        # fromSecret is the path for sensitive values. It decodes the key and
-        # keeps the value out of status and out of publishedOutputs below.
-        - name: token
-          fromSecret:
-            namespace: "{{ .Values.backendNamespace }}"
-            name: "{{ .Values.backendSecretName }}"
-            key: token
 
     # ---------------------------------------------------------------------
-    # Task 2: the frontend. Waits for the backend and is configured from it.
+    # Task 3: the frontend. Configured from both tasks above it.
+    #
+    # backendToken reads an output of `credentials`, which is not in this task's
+    # dependsOn. That is allowed because the path is transitive: frontend ->
+    # backend -> credentials. A reference with no path at all is rejected with
+    # MissingDependsOn.
     # ---------------------------------------------------------------------
     - name: frontend
       dependsOn:
@@ -98,11 +142,11 @@ spec:
           repoURL: "{{ .Values.repoURL }}"
           targetRevision: "{{ .Values.targetRevision }}"
           namespace: "{{ .Values.frontendNamespace }}"
-          # The handoff. These render only after the backend task is Synced and
-          # Healthy and both values are captured, so the frontend Application is
-          # never created carrying a placeholder.
+          # The handoff. These render only once both producing tasks are healthy
+          # and their values are captured, so the frontend Application is never
+          # created carrying a placeholder.
           backendEndpoint: "{{ .Outputs.backend.endpoint }}"
-          backendToken: "{{ .Outputs.backend.token }}"
+          backendToken: "{{ .Outputs.credentials.token }}"
 
   # Captured outputs are internal to the stack unless they are published. The
   # endpoint is safe to hand to users; the token is not published at all.
@@ -111,4 +155,3 @@ spec:
       fromTask:
         task: backend
         output: endpoint
-

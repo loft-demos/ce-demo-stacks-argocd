@@ -14,12 +14,9 @@ spec:
       labels:
         {{- include "backend.selectorLabels" . | nindent 8 }}
       annotations:
-        # Roll the pods when the served config changes.
-        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        # Roll the pods when the served config or the accepted token changes.
+        checksum/config: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
     spec:
-      serviceAccountName: {{ include "backend.fullname" . }}
-      # The pod reads the API token it should accept from the same Secret the
-      # Stack captures, so both sides agree on where the value lives.
       automountServiceAccountToken: false
       containers:
         - name: backend
@@ -41,21 +38,12 @@ spec:
             - name: config
               mountPath: /etc/nginx/conf.d
               readOnly: true
-            - name: api-token
-              mountPath: /etc/backend
-              readOnly: true
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
         - name: config
-          configMap:
-            name: {{ include "backend.fullname" . }}
-        - name: api-token
           secret:
-            secretName: {{ .Values.tokenSecret.name }}
-            # The token controller has not filled it in yet on the very first
-            # rollout, so the pod must not block waiting for the key.
-            optional: true
+            secretName: {{ include "backend.fullname" . }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

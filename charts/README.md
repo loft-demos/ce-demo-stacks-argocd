@@ -9,81 +9,81 @@ charts/
   frontend/    synced by the stack's `frontend` task, from path charts/frontend
 ```
 
-Both charts render under `helm template` on their own, so they can be checked
-without a Platform, an Argo CD instance, or a cluster. See the repository README
-for the whole picture; this file covers the chart side.
+Neither chart generates the API token. That is the job of the `credentials`
+task, which is a Platform App rather than an Argo CD Application precisely
+because these charts cannot do it; see the repository README for why. Both
+charts *consume* the token.
 
-## The contract between the Stack and the charts
+Both charts render under `helm template` on their own, so they can be checked
+without a Platform, an Argo CD instance, or a cluster.
+
+## The contract between the Stack and this repository
 
 The Stack does not read the charts. It addresses their output by name, so these
 have to agree:
 
-| Stack | Chart | Value |
+| Stack | Where it is set | Value |
 | --- | --- | --- |
-| `backendServiceName` parameter | backend Service name | `backend` |
-| `backendSecretName` parameter | backend `tokenSecret.name` | `backend-api` |
-| `fromSecret.key` on the `token` output | key in that Secret | `token` |
-| `backendNamespace` parameter | Argo CD `destination.namespace` | `demo-backend` |
-| `frontendNamespace` parameter | Argo CD `destination.namespace` | `demo-frontend` |
+| `backendServiceName` parameter | backend chart Service name | `backend` |
+| `backendSecretName` parameter | `secretName` parameter on the `demo-api-token` App | `backend-api` |
+| `fromSecret.key` on the `token` output | key the App's manifest writes | `token` |
+| `backendNamespace` parameter | `defaultNamespace` on the App, and the backend Argo CD `destination.namespace` | `demo-backend` |
+| `frontendNamespace` parameter | frontend Argo CD `destination.namespace` | `demo-frontend` |
 
 Both charts name their resources after the release, and the
 `ArgoCDApplicationTemplate` sets `helm.releaseName` to `backend` and `frontend`,
 which is what produces the names above.
 
+The `backendNamespace` row is the one to watch. An App's `defaultNamespace` is
+not templated, so it is a literal in `platform/app-templates.yaml`. It is also
+the release namespace, and therefore the only namespace the `credentials` task's
+outputs may be read from. Change one side without the other and the capture
+fails rather than reading the wrong thing.
+
 ## backend
 
 Serves a fixed JSON body on `/` and `ok` on `/healthz`.
 
-It produces the two values the Stack captures:
+- **Requires `backend.token`** and fails the render without it. The value is the
+  shared token the `credentials` task generated; nginx returns `401` on `/`
+  unless the request carries it as `X-Api-Token`. `/healthz` is deliberately
+  left open so the probes do not need it.
+- **Produces the Service the Stack captures.** `backend` is a ClusterIP Service,
+  and the stack reads `{.spec.clusterIP}` off it with a `fromResource` output.
+  The cluster assigns that address, so it is the clearest case of a value that
+  has to be captured rather than configured.
 
-- **Service `backend`.** The Stack reads `{.spec.clusterIP}` off it with a
-  `fromResource` output. The cluster assigns that address, so it is the clearest
-  case of a value that has to be captured rather than configured.
-- **Secret `backend-api`, key `token`.** Declared as a
-  `kubernetes.io/service-account-token` Secret with no `data` block. Kubernetes'
-  token controller fills `data.token` after the Secret exists, so the value is
-  created by the cluster rather than by whoever installed the chart. The Stack
-  reads it with a `fromSecret` output.
-
-Two details worth copying into a real chart:
-
-- **No `randAlphaNum`.** Argo CD renders manifests client-side with no cluster
-  access, so a chart cannot look up whether it already generated a secret. A
-  chart that generates one inline rotates it on every sync, and with
-  `selfHeal: true` that is a permanent diff. Letting the cluster fill the value,
-  and declaring no `data`, means Argo CD compares only the fields the manifest
-  actually sets and leaves the generated token alone.
-- **A sync wave on the ServiceAccount.** The token controller deletes an
-  SA-token Secret whose ServiceAccount does not exist. Helm's install order
-  already puts ServiceAccount before Secret; Argo CD sorts Secret first, so
-  `argocd.argoproj.io/sync-wave: "-1"` on the ServiceAccount is what orders them
-  there. That is the in-Application version of the same ordering problem the
-  Stack solves between Applications with `dependsOn`.
+The served config is a Secret rather than a ConfigMap because it carries the
+token, and the Deployment has a `checksum/config` annotation over it so the pods
+roll when the token or the config changes.
 
 ## frontend
 
-An nginx reverse proxy in front of the backend. `/api/` is proxied to the
-backend and carries the API token as `X-Api-Token`; `/` returns a static body.
+An nginx reverse proxy in front of the backend. `/api/` is proxied to the backend
+and carries the token as `X-Api-Token`; `/` returns a static body.
 
 It requires two values and fails the render without them:
 
 ```yaml
 backend:
-  url: http://10.96.0.42:8080
-  token: <captured>
+  url: http://10.96.0.42:8080    # from the backend task's endpoint output
+  token: <captured>              # from the credentials task's token output
 ```
 
 Neither has a default, on purpose. They arrive from the Stack, and a frontend
-that silently installed pointing nowhere would be worse than a failed sync.
+that silently installed pointing nowhere, or sending an empty token, would be
+worse than a failed sync.
 
-The proxy config is a Secret rather than a ConfigMap because it carries the
-token, and the Deployment has a `checksum/config` annotation over it so the pods
-roll when a re-captured output changes the value.
+Note that the two values come from *different* tasks. The frontend lists only
+`backend` in `dependsOn`, and reaches the `credentials` output through the
+transitive path `frontend -> backend -> credentials`.
 
 ## Trying the charts without the Platform
 
 ```bash
-helm template backend charts/backend --namespace demo-backend
+helm template backend charts/backend --namespace demo-backend \
+  --set backend.token=example-token
+
 helm template frontend charts/frontend --namespace demo-frontend \
   --set backend.url=http://10.96.0.42:8080 \
   --set backend.token=example-token
@@ -92,10 +92,18 @@ helm template frontend charts/frontend --namespace demo-frontend \
 Installed for real, the handoff the Stack automates is done by hand:
 
 ```bash
-helm install backend charts/backend -n demo-backend --create-namespace
-kubectl -n demo-backend get svc backend -o jsonpath='{.spec.clusterIP}'
-kubectl -n demo-backend get secret backend-api -o jsonpath='{.data.token}' | base64 -d
+TOKEN=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)
+kubectl create namespace demo-backend
+kubectl -n demo-backend create secret generic backend-api --from-literal=token="$TOKEN"
+
+helm install backend charts/backend -n demo-backend --set backend.token="$TOKEN"
+ENDPOINT=$(kubectl -n demo-backend get svc backend -o jsonpath='{.spec.clusterIP}')
+
+helm install frontend charts/frontend -n demo-frontend --create-namespace \
+  --set backend.url="http://$ENDPOINT:8080" \
+  --set backend.token="$TOKEN"
 ```
 
-Reading those two values and passing them to the frontend release is exactly
-what the `backend` task's outputs and the `frontend` task's parameters do.
+Generating that token, reading the cluster IP back out, and passing both to the
+releases that need them is exactly what the `credentials` task, the `backend`
+task's output, and the two sets of task parameters do.
