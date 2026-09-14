@@ -393,6 +393,15 @@ that a rotation did not reach only one of them:
 kubectl -n demo-backend get secret backend-api -o jsonpath='{.data.token}' | base64 -d
 ```
 
+**The Argo CD Application sits in Progressing and the syncer reports "the object
+has been modified".** The route's rule needs an explicit `name`, which the chart
+sets. Without one, two controllers rewrite each other forever: when the tenant
+cluster can sleep, the Platform agent stamps a generated name onto the *host*
+rule so it can attach a RequestMirror filter, and vCluster then rewrites the host
+spec from the still-unnamed tenant rule and strips the name back off. The giveaway
+is a tenant route stuck at `generation: 1` whose status reports a much higher
+`observedGeneration` — the host copy is churning while the tenant copy is not.
+
 **The HTTPRoute is not being served.** Check the three places it has to land.
 In the tenant, the mirror must exist and the route must have attached:
 

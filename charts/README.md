@@ -92,6 +92,13 @@ plane cluster is the tenant's sync config, which the repository README covers.
 `gateway.name` is required when the route is enabled, and the chart fails the
 render without it.
 
+The rule carries an explicit `name`, and that is load-bearing rather than
+decorative. On a tenant cluster that can sleep, the Platform agent adds a
+RequestMirror filter to the host copy of the route and needs a named rule to
+attach it to; vCluster correlates host and tenant rules by name when deciding
+which filters to preserve. Leave the rule unnamed and the agent stamps a name on
+the host while vCluster strips it again on the next sync, which never converges.
+
 Note that the two values come from *different* tasks. The frontend lists only
 `backend` in `dependsOn`, and reaches the `credentials` output through the
 transitive path `frontend -> backend -> credentials`.

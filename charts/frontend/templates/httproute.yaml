@@ -41,7 +41,22 @@ spec:
     {{- toYaml . | nindent 4 }}
   {{- end }}
   rules:
-    - matches:
+      # Name the rule. Do not remove this.
+      #
+      # When the tenant cluster can sleep, the Platform agent adds a RequestMirror
+      # filter to the *host* copy of this route so traffic through it refreshes the
+      # last-activity timestamp. If the rule is unnamed, the agent stamps a
+      # generated name onto the host rule, and vCluster's sync then rewrites the
+      # host spec from this (still unnamed) rule and strips that name straight back
+      # off. The two controllers rewrite each other forever: the host generation
+      # climbs, the syncer reports "the object has been modified", and the Argo CD
+      # Application never leaves Progressing.
+      #
+      # With an explicit name, vCluster correlates host and tenant rules by name
+      # instead of by position, the agent has nothing left to stamp, and both sides
+      # converge on the first pass.
+    - name: default
+      matches:
         - path:
             type: PathPrefix
             value: /
