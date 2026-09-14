@@ -19,7 +19,7 @@ kind: VirtualClusterTemplate
 metadata:
   name: stacks-demo-app-tenant
 spec:
-  displayName: Tenant cluster with the Stacks demo app
+  displayName: Shared Nodes tenant cluster with the Stacks demo app
   parameters:
     - variable: repoURL
       label: Git repository URL
@@ -32,7 +32,7 @@ spec:
       chart:
         name: vcluster
         repo: https://charts.loft.sh
-        version: "0.37.0"
+        version: "0.37.1"
       values: |-
         integrations:
           argoCD:
