@@ -25,6 +25,11 @@ spec:
       label: Git repository URL
       type: string
       required: true
+    - variable: hostname
+      label: Frontend hostname
+      description: Must resolve to the shared Gateway's address, and be accepted by its listener.
+      type: string
+      required: true
   template:
     pro:
       enabled: true
@@ -48,10 +53,52 @@ spec:
               parameters:
                 repoURL: "{{ .Values.repoURL }}"
                 targetRevision: main
+                exposeThroughGateway: "true"
+                hostname: "{{ .Values.hostname }}"
               defaults:
                 taskTimeout: 10m
               prunePolicy: Prune
-        
+
+        # Gateway API sync. This is what lets the tenant's HTTPRoute be served by
+        # a Gateway that lives in the control plane cluster, without the tenant
+        # running a Gateway or a controller of its own.
+        sync:
+          fromHost:
+            # The mirrored Gateway names a GatewayClass; import the classes too
+            # so the tenant-facing copy resolves.
+            gatewayClasses:
+              enabled: true
+            gateways:
+              enabled: true
+              # control-plane namespace/name : tenant-facing namespace/name.
+              # Keeping both sides identical makes the demo easier to follow;
+              # they do not have to match. A wildcard key must map to a wildcard
+              # target, and the target namespace may not be the vCluster's own
+              # host namespace.
+              mappings:
+                byName:
+                  "gateway-system/shared-gateway": "gateway-system/shared-gateway"
+              allowedRoutes:
+                # Without this the default is Same, and a route in
+                # demo-frontend could not attach to a Gateway mirrored into
+                # gateway-system.
+                defaultVirtualNamespacePolicy:
+                  from: All
+              status:
+                # Surface the Gateway's address inside the tenant, so
+                # `kubectl get gateway -n gateway-system` shows where to point DNS.
+                exposeAddresses: true
+          toHost:
+            # The Gateway routes to the synced Service, so Service sync has to be
+            # on for the backendRef to resolve on the control plane cluster.
+            services:
+              enabled: true
+            gatewayApi:
+              # Only routes travel outward. Tenants do not create Gateways here,
+              # so gateway sync to the control plane cluster stays off.
+              httpRoutes:
+                enabled: true
+
         controlPlane:
           backingStore:
             etcd:

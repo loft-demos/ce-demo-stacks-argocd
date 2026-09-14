@@ -48,6 +48,26 @@ spec:
       label: Shared API token Secret name
       type: string
       defaultValue: backend-api
+    # Gateway API exposure, off by default. Turning it on requires the tenant
+    # cluster's vcluster.yaml to carry the sync config in
+    # install/virtual-cluster-template.yaml, and a Gateway on the control plane
+    # cluster for the route to attach to.
+    - variable: exposeThroughGateway
+      label: Expose the frontend through a shared Gateway
+      type: boolean
+      defaultValue: "false"
+    - variable: gatewayName
+      label: Gateway name, as mirrored into the tenant
+      type: string
+      defaultValue: shared-gateway
+    - variable: gatewayNamespace
+      label: Gateway namespace, as mirrored into the tenant
+      type: string
+      defaultValue: gateway-system
+    - variable: hostname
+      label: Frontend hostname
+      type: string
+      defaultValue: ""
 
   tasks:
     # ---------------------------------------------------------------------
@@ -147,6 +167,10 @@ spec:
           # created carrying a placeholder.
           backendEndpoint: "{{ .Outputs.backend.endpoint }}"
           backendToken: "{{ .Outputs.credentials.token }}"
+          httpRouteEnabled: "{{ .Values.exposeThroughGateway }}"
+          gatewayName: "{{ .Values.gatewayName }}"
+          gatewayNamespace: "{{ .Values.gatewayNamespace }}"
+          hostname: "{{ .Values.hostname }}"
 
   # Captured outputs are internal to the stack unless they are published. The
   # endpoint is safe to hand to users; the token is not published at all.

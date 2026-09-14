@@ -74,6 +74,24 @@ Neither has a default, on purpose. They arrive from the Stack, and a frontend
 that silently installed pointing nowhere, or sending an empty token, would be
 worse than a failed sync.
 
+It also renders an optional HTTPRoute, off unless `httpRoute.enabled` is set:
+
+```yaml
+httpRoute:
+  enabled: true
+  gateway:
+    name: shared-gateway        # as the tenant sees it after the import mapping
+    namespace: gateway-system
+    sectionName: ""             # optional listener name
+  hostnames:
+    - demo.example.com          # optional
+```
+
+The route is ordinary Gateway API. What makes it reach a Gateway in the control
+plane cluster is the tenant's sync config, which the repository README covers.
+`gateway.name` is required when the route is enabled, and the chart fails the
+render without it.
+
 Note that the two values come from *different* tasks. The frontend lists only
 `backend` in `dependsOn`, and reaches the `credentials` output through the
 transitive path `frontend -> backend -> credentials`.

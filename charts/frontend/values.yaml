@@ -20,6 +20,22 @@ backend:
   # The API token the backend's Secret holds.
   token: ""
 
+# Exposes the frontend through a Gateway in the control plane cluster, using
+# vCluster's Gateway API sync. Off by default: it needs the tenant cluster to be
+# configured with sync.fromHost.gateways and sync.toHost.gatewayApi.httpRoutes,
+# and a Gateway on the control plane cluster to attach to.
+httpRoute:
+  enabled: false
+  gateway:
+    # Name and namespace as the Gateway appears *inside the tenant cluster*,
+    # which is what sync.fromHost.gateways.mappings.byName decides.
+    name: shared-gateway
+    namespace: gateway-system
+    # Optional listener name, when the Gateway has more than one.
+    sectionName: ""
+  # Optional. Leave empty to serve on every hostname the listener accepts.
+  hostnames: []
+
 resources: {}
 nodeSelector: {}
 tolerations: []

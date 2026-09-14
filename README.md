@@ -63,6 +63,10 @@ name, so nothing in `platform/` parses a chart.
 - A tenant cluster to deploy into, or a template that creates one.
 - This repository pushed somewhere the Argo CD connector can read.
 
+Optional, for the Gateway API exposure described below: Gateway API installed on
+the **control plane cluster** with a controller and a Gateway to share. Nothing
+extra is needed inside the tenant cluster.
+
 ## Quick start
 
 **1. Push this repository** and note its URL. Argo CD reads `charts/backend` and
@@ -106,6 +110,129 @@ from that template gets its own StackInstance, owned by the tenant cluster and
 deleted with it. That path needs `integrations.argoCD` enabled with a connector
 in the **same** `vcluster.yaml`.
 
+## Exposing the frontend through a shared Gateway
+
+Off by default. Turned on, the frontend gets an HTTPRoute served by a Gateway
+that lives in the **control plane cluster** — the tenant runs no Gateway, no
+controller, and no ingress of its own.
+
+### How it works
+
+Two halves of vCluster's Gateway API sync meet in the middle:
+
+```text
+control plane cluster                         tenant cluster
+─────────────────────                         ──────────────
+gateway-system/shared-gateway  ──import──►    gateway-system/shared-gateway
+  (real Gateway + controller)                   (read-only mirror)
+                                                        ▲
+                                                        │ parentRefs
+loft-default-v-<tenant>/                                │
+  frontend-x-demo-frontend-x-…  ◄──sync──     demo-frontend/frontend
+  (HTTPRoute, parentRefs                        (HTTPRoute the chart creates)
+   rewritten to the real Gateway)
+```
+
+- `sync.fromHost.gateways` mirrors the control plane Gateway into the tenant,
+  read-only, at whatever namespace and name the mapping gives it. The tenant can
+  see it and attach to it, but cannot edit it.
+- `sync.toHost.gatewayApi.httpRoutes` syncs the tenant's HTTPRoute outward into
+  the tenant's host namespace, rewriting `parentRefs` back to the real Gateway
+  and `backendRefs` to the synced Services.
+
+So the chart writes an ordinary HTTPRoute against an ordinary Gateway. The sync
+config is what makes that Gateway a shared one.
+
+vCluster installs the Gateway API CRDs into the tenant cluster itself when
+HTTPRoute sync is on, so there is nothing to pre-install there.
+
+### What the control plane cluster needs
+
+A Gateway whose listener accepts routes from the tenant's host namespace. The
+tenant's routes land in `loft-default-v-<tenant>`, not in a namespace you named,
+so a listener restricted to `Same` will not serve them:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: shared-gateway
+  namespace: gateway-system
+spec:
+  gatewayClassName: <your class>
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All      # or a Selector matching the vCluster host namespaces
+```
+
+### The tenant side
+
+`platform/install/virtual-cluster-template.yaml` carries the sync config:
+
+```yaml
+sync:
+  fromHost:
+    gatewayClasses:
+      enabled: true
+    gateways:
+      enabled: true
+      mappings:
+        byName:
+          "gateway-system/shared-gateway": "gateway-system/shared-gateway"
+      allowedRoutes:
+        defaultVirtualNamespacePolicy:
+          from: All
+      status:
+        exposeAddresses: true
+  toHost:
+    services:
+      enabled: true
+    gatewayApi:
+      httpRoutes:
+        enabled: true
+```
+
+Four of those are load-bearing and easy to get wrong:
+
+| Setting | Why |
+| --- | --- |
+| `mappings.byName` | Required whenever `fromHost.gateways` is on, and the mapping is what decides the namespace and name the tenant sees. A wildcard key must map to a wildcard target, and the target namespace may not be the vCluster's own host namespace. |
+| `allowedRoutes.defaultVirtualNamespacePolicy.from: All` | The default is `Same`. Without this, a route in `demo-frontend` cannot attach to a Gateway mirrored into `gateway-system`. |
+| `toHost.services.enabled` | The Gateway routes to the Service on the control plane cluster, so the backendRef only resolves if the Service is synced out. |
+| `toHost.gatewayApi.gateways` left off | Routes travel outward; tenants do not create Gateways. Leaving Gateway sync off keeps it that way. |
+
+`status.exposeAddresses: true` is optional but makes the demo easier — it lets
+the tenant see where to point DNS:
+
+```bash
+vcluster connect stacks-demo
+kubectl get gateway -n gateway-system shared-gateway
+```
+
+### Turning it on
+
+Via the tenant cluster template, it is already wired: supply the `hostname`
+parameter and the stack sets `exposeThroughGateway: "true"` for you.
+
+For a StackInstance against an existing tenant cluster, that cluster's
+`vcluster.yaml` needs the sync block above, and the stack needs the parameters:
+
+```yaml
+spec:
+  parameters:
+    exposeThroughGateway: "true"
+    hostname: demo.example.com
+    # gatewayName / gatewayNamespace default to shared-gateway / gateway-system,
+    # named as the tenant sees them after the import mapping.
+```
+
+Point DNS for that hostname at the Gateway's address, and the demo ends on a URL
+rather than a kubectl pod.
+
 ## Watching it run
 
 Aggregate phase plus one line per task:
@@ -133,6 +260,12 @@ address and token the stack handed over, so this returns the backend's JSON:
 vcluster connect my-tenant-cluster
 kubectl -n demo-frontend run curl --rm -it --image=curlimages/curl --restart=Never -- \
   curl -s http://frontend:8080/api/
+```
+
+With the Gateway exposure on, the same check is just a browser tab, or:
+
+```bash
+curl -s https://demo.example.com/api/
 ```
 
 The backend rejects anything that does not carry the generated token, which is
@@ -259,6 +392,27 @@ that a rotation did not reach only one of them:
 ```bash
 kubectl -n demo-backend get secret backend-api -o jsonpath='{.data.token}' | base64 -d
 ```
+
+**The HTTPRoute is not being served.** Check the three places it has to land.
+In the tenant, the mirror must exist and the route must have attached:
+
+```bash
+vcluster connect stacks-demo
+kubectl get gateway -n gateway-system shared-gateway
+kubectl get httproute -n demo-frontend frontend -o jsonpath='{.status.parents[*].conditions[*]}{"\n"}'
+```
+
+A `NotAllowedByListeners` condition means a namespace policy rejected it: either
+`allowedRoutes.defaultVirtualNamespacePolicy` on the tenant side, or the real
+Gateway's own `allowedRoutes` on the control plane side, which has to accept
+routes from the tenant's host namespace. Then confirm it synced outward:
+
+```bash
+kubectl get httproute -n loft-default-v-stacks-demo
+```
+
+Nothing there means `sync.toHost.gatewayApi.httpRoutes` is off, or the tenant
+never accepted the route in the first place.
 
 **Retrying.** The two task types differ here. An `argoCDApplication` task is
 retried with a hard refresh plus a sync; an `app` task reports

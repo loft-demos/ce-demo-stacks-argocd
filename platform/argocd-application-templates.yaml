@@ -95,6 +95,24 @@ spec:
       label: Backend API token
       type: password
       required: true
+    # Gateway API exposure. Off unless the tenant cluster is configured with
+    # sync.fromHost.gateways and sync.toHost.gatewayApi.httpRoutes.
+    - variable: httpRouteEnabled
+      label: Expose through a Gateway
+      type: boolean
+      defaultValue: "false"
+    - variable: gatewayName
+      label: Gateway name (as mirrored into the tenant)
+      type: string
+      defaultValue: shared-gateway
+    - variable: gatewayNamespace
+      label: Gateway namespace (as mirrored into the tenant)
+      type: string
+      defaultValue: gateway-system
+    - variable: hostname
+      label: Hostname
+      type: string
+      defaultValue: ""
   template:
     metadata:
       labels:
@@ -111,6 +129,15 @@ spec:
             backend:
               url: "http://{{ .Values.backendEndpoint }}:8080"
               token: "{{ .Values.backendToken }}"
+            httpRoute:
+              enabled: {{ .Values.httpRouteEnabled }}
+              gateway:
+                name: "{{ .Values.gatewayName }}"
+                namespace: "{{ .Values.gatewayNamespace }}"
+              {{- if .Values.hostname }}
+              hostnames:
+                - "{{ .Values.hostname }}"
+              {{- end }}
       destination:
         namespace: "{{ .Values.namespace }}"
       syncPolicy:
@@ -119,4 +146,3 @@ spec:
           selfHeal: true
         syncOptions:
           - CreateNamespace=true
-
