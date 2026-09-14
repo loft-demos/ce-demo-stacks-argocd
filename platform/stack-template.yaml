@@ -50,7 +50,7 @@ spec:
     # because it is addressed as {{ .Outputs.backend.<name> }}.
     # ---------------------------------------------------------------------
     - name: backend
-      timeout: 10m
+      timeout: 10m0s
       argoCDApplication:
         templateRef:
           name: demo-backend
@@ -90,7 +90,7 @@ spec:
     - name: frontend
       dependsOn:
         - backend
-      timeout: 10m
+      timeout: 10m0s
       argoCDApplication:
         templateRef:
           name: demo-frontend
