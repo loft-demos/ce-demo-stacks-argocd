@@ -17,9 +17,9 @@
 apiVersion: management.loft.sh/v1
 kind: VirtualClusterTemplate
 metadata:
-  name: demo-app-tenant
+  name: stacks-demo-app-tenant
 spec:
-  displayName: Tenant cluster with the demo app
+  displayName: Tenant cluster with the Stacks demo app
   parameters:
     - variable: repoURL
       label: Git repository URL
