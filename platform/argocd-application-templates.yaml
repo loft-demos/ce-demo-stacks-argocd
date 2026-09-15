@@ -109,6 +109,14 @@ spec:
       label: Gateway namespace (as mirrored into the tenant)
       type: string
       defaultValue: gateway-system
+    - variable: gatewaySectionName
+      label: Gateway listener name
+      description: >-
+        Optional. Pins the route to one listener. Leave empty and the route
+        attaches to every listener whose hostname and protocol it matches, which
+        for a wildcard listener includes plain HTTP on port 80.
+      type: string
+      defaultValue: ""
     - variable: hostname
       label: Hostname
       type: string
@@ -134,6 +142,7 @@ spec:
               gateway:
                 name: "{{ .Values.gatewayName }}"
                 namespace: "{{ .Values.gatewayNamespace }}"
+                sectionName: "{{ .Values.gatewaySectionName }}"
               {{- if .Values.hostname }}
               hostnames:
                 - "{{ .Values.hostname }}"

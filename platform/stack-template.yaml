@@ -64,6 +64,14 @@ spec:
       label: Gateway namespace, as mirrored into the tenant
       type: string
       defaultValue: gateway-system
+    # Optional. Gateway API hostname wildcards are suffix matches spanning any
+    # number of labels, so a route for app.tenant.example.com also matches a
+    # "*.example.com" listener. Left empty the route attaches to every listener
+    # it matches, including plain HTTP on port 80. Name a listener to pin it.
+    - variable: gatewaySectionName
+      label: Gateway listener name
+      type: string
+      defaultValue: ""
     - variable: hostname
       label: Frontend hostname
       type: string
@@ -170,6 +178,7 @@ spec:
           httpRouteEnabled: "{{ .Values.exposeThroughGateway }}"
           gatewayName: "{{ .Values.gatewayName }}"
           gatewayNamespace: "{{ .Values.gatewayNamespace }}"
+          gatewaySectionName: "{{ .Values.gatewaySectionName }}"
           hostname: "{{ .Values.hostname }}"
 
   # Captured outputs are internal to the stack unless they are published. The

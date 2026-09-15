@@ -30,6 +30,24 @@ spec:
       description: Must resolve to the shared Gateway's address, and be accepted by its listener.
       type: string
       required: true
+    # Optional overrides. Left empty, the StackTemplate's own defaults apply
+    # (shared-gateway / gateway-system / no section pin).
+    - variable: gatewayName
+      label: Gateway name, as mirrored into the tenant
+      type: string
+      defaultValue: ""
+    - variable: gatewayNamespace
+      label: Gateway namespace, as mirrored into the tenant
+      type: string
+      defaultValue: ""
+    - variable: gatewaySectionName
+      label: Gateway listener name
+      description: >-
+        Pins the route to one listener. Worth setting on a Gateway with
+        overlapping wildcard hostnames, where which listener serves a request
+        otherwise shifts as listeners are added.
+      type: string
+      defaultValue: ""
   template:
     pro:
       enabled: true
@@ -55,6 +73,15 @@ spec:
                 targetRevision: main
                 exposeThroughGateway: "true"
                 hostname: "{{ .Values.hostname }}"
+                {{- if .Values.gatewayName }}
+                gatewayName: "{{ .Values.gatewayName }}"
+                {{- end }}
+                {{- if .Values.gatewayNamespace }}
+                gatewayNamespace: "{{ .Values.gatewayNamespace }}"
+                {{- end }}
+                {{- if .Values.gatewaySectionName }}
+                gatewaySectionName: "{{ .Values.gatewaySectionName }}"
+                {{- end }}
               defaults:
                 taskTimeout: 10m
               prunePolicy: Prune
