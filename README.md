@@ -66,7 +66,7 @@ name, so nothing in `platform/` parses a chart.
 Optional, for the Gateway API exposure described below: Gateway API installed on
 the **control plane cluster** with a controller and a Gateway to share, plus one
 health-check override on your Argo CD. Nothing extra is needed inside the tenant
-cluster — vCluster installs the Gateway API CRDs there itself.
+cluster as vCluster installs the Gateway API CRDs there itself.
 
 ## Quick start
 
@@ -114,7 +114,7 @@ in the **same** `vcluster.yaml`.
 ## Exposing the frontend through a shared Gateway
 
 Off by default. Turned on, the frontend gets an HTTPRoute served by a Gateway
-that lives in the **control plane cluster** — the tenant runs no Gateway, no
+that lives in the **control plane cluster** while the the tenant runs no Gateway, no
 controller, and no ingress of its own.
 
 ### How it works
@@ -206,7 +206,7 @@ Four of those are load-bearing and easy to get wrong:
 | `toHost.services.enabled` | The Gateway routes to the Service on the control plane cluster, so the backendRef only resolves if the Service is synced out. |
 | `toHost.gatewayApi.gateways` left off | Routes travel outward; tenants do not create Gateways. Leaving Gateway sync off keeps it that way. |
 
-`status.exposeAddresses: true` is optional but makes the demo easier — it lets
+`status.exposeAddresses: true` is optional but makes the demo easier and it lets
 the tenant see where to point DNS:
 
 ```bash
@@ -221,17 +221,35 @@ forever and the stack task eventually times out.
 
 This is a vCluster bug, not a configuration mistake. `statusToVirtual` in the
 HTTPRoute syncer translates the parent reference from host to tenant, but copies
-`status.observedGeneration` across verbatim. That field is defined by Kubernetes
-API convention as the generation of *the object it appears on*, and the host and
-tenant copies have independent generations. They happen to track each other
-until something writes the host copy on its own — which the Platform's own
-sleep-mode agent does, adding a RequestMirror filter so route traffic can refresh
-the tenant's last-activity timestamp. After that write the tenant route reports
-`generation: 1` alongside `observedGeneration: 2`, permanently, and every client
-that does the standard freshness check reads it as a status that never caught up.
-Argo CD is only the one that says so out loud; kstatus, and therefore Flux and
-`kubectl wait`, behave the same way. The same gap is in the TLSRoute,
-BackendTLSPolicy and imported-Gateway syncers.
+`observedGeneration` across verbatim. That field is defined by Kubernetes API
+convention as the generation of *the object it appears on*, and the host and
+tenant copies have independent generations. They track each other only until
+something writes the host copy on its own, which the Platform's own sleep-mode
+agent does: it adds a RequestMirror filter so route traffic can refresh the
+tenant's last-activity timestamp. vCluster then deliberately keeps that filter
+(`preserveRequestMirrorFilters`, driven by the
+`vcluster.loft.sh/preserve-request-mirror-filters` annotation the agent sets), so
+the host spec is a permanent superset of the tenant spec and the host generation
+stays permanently ahead. The tenant route ends up reporting `generation: 1`
+alongside `observedGeneration: 2`, and nothing ever writes generation 2 to the
+tenant object.
+
+Argo CD's built-in HTTPRoute health check implements the Gateway API freshness
+convention faithfully: `isParentGenerationObserved` skips any parent whose
+conditions carry an `observedGeneration` that differs from `metadata.generation`.
+Every parent gets skipped, so the check falls through to its last branch,
+`Progressing` with "Waiting for HTTPRoute status", and `Accepted=True` and
+`ResolvedRefs=True` are never read.
+
+This bites only clients that read the per-parent conditions. kstatus looks for
+`status.observedGeneration` at the object root, which HTTPRoute does not have, so
+Flux is not affected by this path, and `kubectl wait --for=condition=` cannot
+reach conditions nested under `status.parents[]` at all.
+
+The same gap is in the TLSRoute, BackendTLSPolicy and imported-Gateway syncers.
+Argo CD gates TLSRoute and BackendTLSPolicy on `observedGeneration` the same way;
+its Gateway check has no generation guard, so an imported Gateway carries the
+same wrong field without tripping Argo CD today.
 
 Until that is fixed upstream, judge the route by its conditions instead. In the
 `argo-cd` Helm chart this goes under `configs.cm`, which passes values through
@@ -463,8 +481,8 @@ is a tenant route stuck at `generation: 1` whose status reports a much higher
 
 **The Application is Synced but stuck in Progressing, health details "Waiting
 for HTTPRoute status".** The route is fine; Argo CD's built-in health check is
-reading `status.observedGeneration` as stale because vCluster copies it from the
-host copy. Confirm by comparing the two numbers on the tenant route:
+reading the `observedGeneration` on `status.parents[].conditions[]` as stale,
+because vCluster copies it from the host copy. Confirm by comparing the two numbers on the tenant route:
 
 ```bash
 kubectl get httproute -n demo-frontend frontend \
