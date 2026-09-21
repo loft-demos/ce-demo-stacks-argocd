@@ -312,6 +312,13 @@ rather than a kubectl pod.
 
 ## Watching it run
 
+The Platform's Stacks view shows the demo's dependency graph and per-task status.
+Here, `credentials`, `backend`, and `frontend` have all reached `Healthy`; the
+task table also shows their dependencies and delivery types (Manifest for the
+Platform App and Argo CD for the two Applications).
+
+![Demo app in the Platform Stacks view, with the credentials → backend → frontend dependency graph and all three tasks marked Healthy](docs/images/stacks-demo-app-screenshot.png)
+
 Aggregate phase plus one line per task:
 
 ```bash
